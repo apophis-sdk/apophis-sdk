@@ -652,11 +652,7 @@ export namespace IBC {
   /** Compute the has of an IBC transfer path. Formatted as `ibc/{hash}`, this is the canonical
    * native denom of the token on the local chain.
    */
-  export function hash(path: string) {
-    const parts = path.split('/');
-    if ((parts.length - 1) % 2 !== 0) throw new Error('Invalid IBC path: expected pattern {port}/{channel}/(...)/{base_denom}');
-    return toHex(sha256(path)).toUpperCase();
-  }
+  export const hash = (path: string) => toHex(sha256(path)).toUpperCase();
 }
 
 interface TxSubscriptionMetadata {
