@@ -31,9 +31,16 @@ import { Tx as SdkTxDirect } from 'cosmjs-types/cosmos/tx/v1beta1/tx.js';
 import { BlockID } from 'cosmjs-types/tendermint/types/types.js';
 import { ABCIQuery, isABCIQuery } from './abciquery.js';
 import { TendermintQuery } from './tmquery.js';
-import { type CosmosTx, CosmosTxAmino, CosmosTxBase, CosmosTxDirect, CosmosTxEncoding, CosmosTxSignal, CosmosTxSignalOptions } from './tx.js';
+import { AminoTxOptions, type CosmosTx, CosmosTxAmino, CosmosTxBase, CosmosTxDirect, CosmosTxEncoding, CosmosTxSignal, CosmosTxSignalOptions, DirectTxOptions } from './tx.js';
 
 type Unsub = () => void;
+
+export interface TxOptionsProtobuf extends DirectTxOptions {
+  encoding?: 'protobuf';
+}
+export interface TxOptionsAmino extends AminoTxOptions {
+  encoding: 'amino';
+}
 
 const { marshal, unmarshal } = extendDefaultMarshaller([
   RecaseMarshalUnit(
@@ -98,10 +105,14 @@ export const Cosmos = new class {
   }
 
   /** Create a new transaction with the given messages. */
-  tx = (messages: object[], { encoding, ...opts }: { gas?: Gas, encoding?: CosmosTxEncoding } = {}) =>
-    encoding === 'amino'
+  tx(messages: object[], opts?: TxOptionsProtobuf): CosmosTxDirect;
+  tx(messages: object[], opts: TxOptionsAmino): CosmosTxAmino;
+  tx(messages: object[], { encoding, ...opts }: any = {}) {
+    return encoding === 'amino'
       ? new CosmosTxAmino(messages, opts)
       : new CosmosTxDirect(messages, opts);
+  }
+
   coin = (amount: bigint | number | string, denom: string): Coin => ({ denom, amount: BigInt(amount) });
 
   /** A wrapper for Transactions for frontends. Built on `computed`, when the messages returned by
