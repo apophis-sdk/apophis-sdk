@@ -1,14 +1,14 @@
 import { CosmosNetworkConfig, ExternalAccount, type NetworkConfig, Signer } from '@apophis-sdk/core';
 import { pubkey, PublicKey } from '@apophis-sdk/core/crypto/pubkey.js';
-import { Cosmos, CosmosTx } from '@apophis-sdk/cosmos';
 import { fromBase64, fromHex, toBase64, toHex } from '@apophis-sdk/core/utils.js';
+import { Cosmos, CosmosTx } from '@apophis-sdk/cosmos';
 import { ReadonlySignal, signal } from '@preact/signals-core';
 import { SignClient as _SignClient } from '@walletconnect/sign-client';
 import { ProposalTypes, SessionTypes } from '@walletconnect/types';
 import { AuthInfo, TxBody } from 'cosmjs-types/cosmos/tx/v1beta1/tx.js';
+import LOGO_DATA_URL from '../logos/walletconnect.js';
 import { type WalletConnectSignerConfig } from './config.js';
 import { WalletConnectSignerError, WalletConnectSignerNotConnectedError } from './error.js';
-import LOGO_DATA_URL from './logo.js';
 import { PeerAccount, SignClient, SignResponse } from './types.api.js';
 
 export interface WCSignerBase {

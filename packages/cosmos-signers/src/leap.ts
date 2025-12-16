@@ -1,4 +1,4 @@
-import { KeplrSigner } from './base.js';
+import { KeplrSigner } from './keplr.js';
 import LOGO_DATA_URL from './logos/leap.js';
 
 // leap's types library is broken & I cba to monkeypatch it

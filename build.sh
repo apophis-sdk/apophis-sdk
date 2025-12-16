@@ -1,7 +1,7 @@
 #!/bin/bash
 dir=$(realpath $(dirname $0))
 
-static_order="core cosmos cosmwasm keplr-signer walletconnect-signer cosmos-signers"
+static_order="core cosmos cosmwasm cosmos-signers"
 # Create space-separated string of full package paths
 static_order_packages=""
 for pkg in $static_order; do

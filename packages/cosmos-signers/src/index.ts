@@ -1,9 +1,11 @@
 import { Signer } from '@apophis-sdk/core';
-import { Keplr, Leap } from '@apophis-sdk/keplr-signer';
-import { WalletConnectCosmosSigner } from '@apophis-sdk/walletconnect-signer';
+import { Keplr } from './keplr.js';
+import { Leap } from './leap.js';
+import { WalletConnectCosmosSigner } from './walletconnect/signer.js';
 
-export * from '@apophis-sdk/keplr-signer';
-export * from '@apophis-sdk/walletconnect-signer';
+export * from './keplr.js';
+export * from './leap.js';
+export * from './walletconnect/index.js';
 
 export function registerCosmosSigners(walletConnectProjectId?: string) {
   Signer.register(Keplr);

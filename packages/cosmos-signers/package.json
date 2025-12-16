@@ -1,12 +1,13 @@
 {
   "name": "@apophis-sdk/cosmos-signers",
-  "version": "0.3.17",
+  "version": "0.4.0",
   "author": "Kiruse",
   "repository": "https://github.com/kiruse/apophis-sdk.git",
   "type": "module",
   "exports": {
     ".": "./dist/index.js",
-    "./*": "./dist/*"
+    "./*": "./dist/*",
+    "./walletconnect.js": "./dist/walletconnect/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -14,9 +15,8 @@
     "test:react": "bash test-apps/react/launch.sh",
     "test:vue": "bash test-apps/vue/launch.sh"
   },
-  "dependencies": {
-    "@apophis-sdk/keplr-signer": "0.3.17",
-    "@apophis-sdk/walletconnect-signer": "0.3.17",
-    "tslib": "^2.6.3"
+  "peerDependencies": {
+    "@apophis-sdk/core": "0.4.0",
+    "@apophis-sdk/cosmos": "0.4.0"
   }
 }

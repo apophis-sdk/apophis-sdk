@@ -1,6 +1,6 @@
 {
   "name": "@apophis-sdk/monorepo",
-  "version": "0.3.17",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "check:imports": "bun run scripts/check-esm-imports.js"
