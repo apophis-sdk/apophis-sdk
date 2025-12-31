@@ -1,4 +1,4 @@
-import { Bytes, mw, type CosmosRegistryAsset, type FungibleAsset } from '@apophis-sdk/core';
+import { Bytes, defaultJsonRpcMarshal, defaultJsonRpcUnmarshal, isJsonRpcResponse, JsonRpcPayload, mw, type CosmosRegistryAsset, type FungibleAsset } from '@apophis-sdk/core';
 import { Any } from '@apophis-sdk/core/encoding/protobuf/any.js';
 import { endpoints } from '@apophis-sdk/core/endpoints.js';
 import { BytesMarshalUnit } from '@apophis-sdk/core/marshal.js';
@@ -303,6 +303,7 @@ export const Cosmos = new class {
   }
 }
 
+// TODO: rewrite this to use the new JsonRpc abstraction
 export class CosmosWebSocket {
   config = {
     getTx: {
@@ -310,14 +311,18 @@ export class CosmosWebSocket {
       hashIsBase64: true,
     },
   };
-  socket: PowerSocket<string>;
+  socket: PowerSocket<JsonRpcPayload, JsonRpcPayload, string>;
   #subs: Record<number, TxSubscriptionMetadata> = {};
   #nextSubId = 2; // 1 is reserved for block subscription
   #onBlock = Event<BlockEvent>();
   #heartbeat: ReturnType<typeof setTimeout> | undefined;
 
   constructor(public readonly network: CosmosNetworkConfig) {
-    this.socket = new PowerSocket<string>(() => endpoints.get(network, 'ws'));
+    this.socket = new PowerSocket<JsonRpcPayload, JsonRpcPayload, string>(
+      () => endpoints.get(network, 'ws'),
+      defaultJsonRpcMarshal,
+      defaultJsonRpcUnmarshal,
+    );
   }
 
   connect() {
@@ -329,18 +334,19 @@ export class CosmosWebSocket {
         params: ['tm.event = \'NewBlock\''],
         id: 1,
       });
-      this.socket.onMessage(async ({ args: msg }) => {
+      this.socket.onMessage(async (_, msg) => {
+        if (!isJsonRpcResponse(msg)) return;
+
         try {
-          const result = unmarshal(JSON.parse(msg)) as RPCResult;
-          if (result.error) {
-            console.warn('RPC error:', this.network, result);
+          if (msg.error) {
+            console.warn('RPC error:', this.network, msg.error);
             return;
           }
 
           // ignore ACK messages (for now)
-          if (!result.result || !Object.entries(result.result).length) return;
-          if (result.id === 1) {
-            const { data: { value: { block, result_finalize_block } } } = (result.result as BlockEventRaw);
+          if (!msg.result || !Object.entries(msg.result).length) return;
+          if (msg.id === 1) {
+            const { data: { value: { block, result_finalize_block } } } = (msg.result as BlockEventRaw);
             this.#onBlock.emit({
               header: block.header,
               lastCommit: block.last_commit,
@@ -349,18 +355,18 @@ export class CosmosWebSocket {
               evidence: block.evidence.evidence,
               txResults: result_finalize_block?.tx_results ?? [],
             });
-          } else if (result.id in this.#subs) {
+          } else if (msg.id in this.#subs) {
             // TODO: should handle multiple subscriptions for the same tx + query
-            const { data: { value: { tx_result: tx } } } = result.result as TransactionEventRaw;
+            const { data: { value: { tx_result: tx } } } = msg.result as TransactionEventRaw;
             if ('code' in tx.result) {
-              this.#subs[result.id]?.callback({
+              this.#subs[msg.id]?.callback({
                 height: tx.height,
                 error: tx.result,
                 txBytes: tx.tx,
                 index: tx.index,
               });
             } else {
-              this.#subs[result.id]?.callback({
+              this.#subs[msg.id]?.callback({
                 height: tx.height,
                 txhash: CosmosTxDirect.computeHash(tx.tx),
                 index: tx.index,
@@ -533,16 +539,16 @@ export class CosmosWebSocket {
       id,
     });
     return new Promise<TransactionResponse>((resolve, reject) => {
-      this.socket.onMessage.oncePred(({ args: msg }) => {
-        const result = unmarshal(JSON.parse(msg)) as RPCResult<TransactionResponse>;
-        if (result.id === id) {
-          if (result.result) {
-            resolve(result.result);
+      this.socket.onMessage.once((_, msg) => {
+        if (!isJsonRpcResponse(msg)) return false;
+        if (msg.id === id) {
+          if (msg.result) {
+            resolve(msg.result);
           } else {
-            reject(result.error);
+            reject(msg.error);
           }
         }
-      }, ({ args }) => JSON.parse(args).id === id);
+      });
     });
   }
 
@@ -615,20 +621,14 @@ export class CosmosWebSocket {
         id,
       });
 
-      this.socket.onMessage.oncePred(({ args: msg }) => {
-        const result = unmarshal(JSON.parse(msg)) as RPCResult<T>;
-        if (result.id === id) {
-          if (result.result) {
-            resolve(result.result);
+      this.socket.onMessage.once((_, msg) => {
+        if (!isJsonRpcResponse(msg)) return false;
+        if (msg.id === id) {
+          if (msg.result) {
+            resolve(msg.result);
           } else {
-            reject(result.error);
+            reject(msg.error);
           }
-        }
-      }, ({ args }) => {
-        try {
-          return JSON.parse(args).id === id;
-        } catch {
-          return false;
         }
       });
     });

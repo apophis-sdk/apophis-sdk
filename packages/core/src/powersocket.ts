@@ -8,7 +8,11 @@ import { Event } from '@kiruse/typed-events';
  * provide a stable instance. It is designed to represent a single stateful connection to a remote
  * endpoint, not a single-use connection that must be re-created whenever the connection is lost.
  */
-export class PowerSocket<T = string> {
+export class PowerSocket<
+  Request,
+  Response,
+  Payload extends string | Uint8Array = string,
+> {
   #ws: WebSocket | undefined;
   #connected = false;
   #reconnecting = false;
@@ -16,7 +20,7 @@ export class PowerSocket<T = string> {
   connectTimeout = 1500;
 
   /** Event emitted whenever a message has been received. */
-  readonly onMessage = Event<T>();
+  readonly onMessage = Event<Response>();
   /** Event emitted when the connection was successfully established. This event is emitted every time
    * the connection is established, including after a reconnection. It thus serves well as a general
    * entrypoint for connection configuration.
@@ -35,8 +39,8 @@ export class PowerSocket<T = string> {
 
   constructor(
     public url: string | (() => string),
-    public marshal: (data: any) => any = (data) => data,
-    public unmarshal: (data: any) => unknown = (data) => data,
+    public marshal: (data: Request) => Payload,
+    public unmarshal: (data: Payload) => Response,
   ) {}
 
   /**
@@ -87,9 +91,9 @@ export class PowerSocket<T = string> {
     return this;
   }
 
-  send(data: any) {
+  send(data: Request) {
     if (!this.#ws || !this.#connected) throw new PowerSocketError('WebSocket not connected');
-    this.#ws.send(JSON.stringify(this.marshal(data)));
+    this.#ws.send(this.marshal(data));
     return this;
   }
 
@@ -128,7 +132,7 @@ export class PowerSocket<T = string> {
   }
 
   #onMessage = (e: MessageEvent) => {
-    this.onMessage.emit(this.unmarshal(e.data) as any);
+    this.onMessage.emit(this.unmarshal(e.data));
   }
 
   /** Whether the socket should attempt to reconnect to the remote endpoint. The standard behavior

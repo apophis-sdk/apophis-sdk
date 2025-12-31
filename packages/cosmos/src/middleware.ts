@@ -1,18 +1,20 @@
 import { DefaultMiddlewares } from '@apophis-sdk/core';
-import type { CosmosEndpoint, CosmosEndpoints, CosmosNetworkConfig, ExternalAccount, FullAccountData, NetworkConfig } from '@apophis-sdk/core';
+import type { CosmosEndpoint, CosmosNetworkConfig, ExternalAccount, FullAccountData, NetworkConfig } from '@apophis-sdk/core';
 import type { MiddlewareImpl } from '@apophis-sdk/core/middleware.js';
 import { CosmosPubkeyMiddleware } from './crypto/pubkey.js';
 import { AminoMiddleware } from './encoding/amino.js';
 import { Cosmos } from './api.js';
 
-const store = new Map<CosmosNetworkConfig, CosmosEndpoints>();
+type Endpoints = Record<CosmosEndpoint, string[]>;
 
-export function setEndpoints(network: CosmosNetworkConfig, endpoints: CosmosEndpoints) {
+const store = new Map<CosmosNetworkConfig, Endpoints>();
+
+export function setEndpoints(network: CosmosNetworkConfig, endpoints: Endpoints) {
   store.set(network, endpoints);
 }
 
 export function setEndpoint(network: CosmosNetworkConfig, which: CosmosEndpoint, value: string) {
-  const endpoints = store.get(network) ?? {};
+  const endpoints = store.get(network) ?? {} as Endpoints;
   if (!endpoints[which]) endpoints[which] = [];
   endpoints[which].push(value);
   store.set(network, endpoints);

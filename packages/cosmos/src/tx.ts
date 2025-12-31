@@ -80,6 +80,10 @@ export abstract class CosmosTxBase<SdkTx> implements TxBase {
     return this;
   }
 
+  addSignature(network: CosmosNetworkConfig, signer: Signer<any>, signature: Uint8Array): this {
+    throw new Error('Not yet implemented');
+  }
+
   setGas(gas: Gas): this {
     this.gas = gas;
     return this;
@@ -138,8 +142,8 @@ export abstract class CosmosTxBase<SdkTx> implements TxBase {
 
   fullSdkTx() {
     if (!this.gas) throw new Error('Gas not set');
-    if (!this.signer || !this.signature || !this.network) throw new Error('Signature not bound');
-    return this.sdkTx(this.network, this.signer, this.signature);
+    if (!this.#signer || !this.#signature || !this.network) throw new Error('Signature not bound');
+    return this.sdkTx(this.network, this.#signer, this.#signature);
   }
 
   /** Get the full bytes of this transaction. Requires signature and gas. */
@@ -167,7 +171,7 @@ export abstract class CosmosTxBase<SdkTx> implements TxBase {
 
   get status(): TxStatus { return this.#status }
   get signer(): Signer<TxBase> | undefined { return this.#signer }
-  get signature(): Uint8Array | undefined { return this.#signature }
+  get signatures(): Map<Signer<TxBase>, Uint8Array> { return this.#signer ? new Map([[this.#signer, this.#signature!]]) : new Map() }
   get network(): CosmosNetworkConfig | undefined { return this.#network }
   get hash(): string { return this.#hash ?? CosmosTxBase.computeHash(this as any) }
   get error(): string | undefined { return this.#error }

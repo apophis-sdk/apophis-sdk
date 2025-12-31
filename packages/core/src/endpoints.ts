@@ -2,17 +2,8 @@ import { NetworkConfig } from './types.js';
 import { mw } from './middleware.js';
 import { CosmosNetworkConfig, SolanaNetworkConfig } from './networks.js';
 
-export type BaseEndpoint = 'rpc';
-export type CosmosEndpoint = BaseEndpoint | 'rest' | 'ws';
-export type SolanaEndpoint = BaseEndpoint;
-
-export type Endpoints<T extends string = 'rpc'> = {
-  [K in T]?: string[];
-};
-
-export type GenericEndpoints = Endpoints<string>;
-export type CosmosEndpoints = Endpoints<CosmosEndpoint>;
-export type SolanaEndpoints = Endpoints<SolanaEndpoint>;
+export type CosmosEndpoint = 'rest' | 'rpc' | 'ws';
+export type SolanaEndpoint = 'rpc' | 'ws';
 
 export const endpoints = new class {
   /** Get the endpoint to use for a given network & endpoint type. */

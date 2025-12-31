@@ -103,7 +103,7 @@ class MiddlewarePipeline<KP extends string[]> {
    */
   fifo(...args: FifoArgs<KP>): Defined<FifoResult<KP>> {
     const result = this.fifoMaybe(...args);
-    if (!result) throw new MiddlewarePipelineError(`No FIFO middleware handled the call`);
+    if (!result) throw new MiddlewarePipelineError(`No FIFO middleware handled \`${this.kp.join('.')}\``);
     return result;
   }
 

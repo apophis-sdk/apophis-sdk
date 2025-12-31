@@ -15,8 +15,15 @@
     "test:react": "bash test-apps/react/launch.sh",
     "test:vue": "bash test-apps/vue/launch.sh"
   },
+  "dependencies": {
+    "@keplr-wallet/types": "^0.12.312",
+    "@walletconnect/keyvaluestorage": "^1.1.1",
+    "@walletconnect/sign-client": "^2.23.3",
+    "@walletconnect/types": "^2.23.3"
+  },
   "peerDependencies": {
     "@apophis-sdk/core": "0.4.0",
     "@apophis-sdk/cosmos": "0.4.0"
-  }
+  },
+  "sideEffects": false
 }

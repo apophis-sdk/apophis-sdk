@@ -1,4 +1,5 @@
 import { Decimal } from '@kiruse/decimal';
+import { Marshaller } from '@kiruse/marshal';
 
 /** Discriminated union of all supported network configurations - discriminated by `ecosystem`. */
 export type NetworkConfig = CosmosNetworkConfig | SolanaNetworkConfig;
@@ -193,4 +194,14 @@ export interface SolanaNetworkConfig {
    * - `localnet`
    */
   chainId: string;
+  endpoints?: {
+    /** RPC endpoints to use. The 3 default Solana networks (mainnet, devnet, testnet) have default endpoints. */
+    rpc: string[];
+    /** Dedicated WebSocket PubSub endpoints to use. If omitted, derived from the `rpc` endpoints. */
+    ws?: string[];
+  };
+  /** Optional custom SLIP44 to use for HD wallets. Solana defaults to 501. */
+  slip44?: number;
+  /** Optional custom marshaller to use for this network. If omitted, the default marshaller is used. */
+  marshaller?: Marshaller;
 }

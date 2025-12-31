@@ -1,5 +1,5 @@
 import { Signal } from '@preact/signals-core';
-import { base64 } from '@scure/base';
+import { base58, base64 } from '@scure/base';
 import { PubKey as SdkEd25519PublicKey } from 'cosmjs-types/cosmos/crypto/ed25519/keys.js';
 import { PubKey as SdkSecp256k1PublicKey } from 'cosmjs-types/cosmos/crypto/secp256k1/keys.js';
 import { pubkey, PublicKey } from './crypto/pubkey.js';
@@ -12,6 +12,14 @@ export function fromBase64(data: string): Uint8Array {
 
 export function toBase64(bytes: Uint8Array): string {
   return base64.encode(bytes);
+}
+
+export function fromBase58(data: string): Uint8Array {
+  return base58.decode(data);
+}
+
+export function toBase58(bytes: Uint8Array): string {
+  return base58.encode(bytes);
 }
 
 export function fromHex(hex: string): Uint8Array {
