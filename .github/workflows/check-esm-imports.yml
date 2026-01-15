@@ -24,11 +24,3 @@ jobs:
 
     - name: Check ESM imports
       run: bun run scripts/check-esm-imports.js --check
-
-    - name: Build packages
-      run: |
-        cd packages/core && bun run build
-        cd ../cosmos && bun run build
-        cd ../cosmwasm && bun run build
-        cd ../keplr-signer && bun run build
-        cd ../walletconnect-signer && bun run build
