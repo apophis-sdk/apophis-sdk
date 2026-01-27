@@ -14,7 +14,6 @@ import {
   BroadcastMode,
   Coin,
   type CosmosEvent,
-  Gas,
   type TransactionEvent,
   type TransactionEventRaw,
   type TransactionResponse,
@@ -25,13 +24,13 @@ import { extendDefaultMarshaller, RecaseMarshalUnit } from '@kiruse/marshal';
 import { restful } from '@kiruse/restful';
 import { Event } from '@kiruse/typed-events';
 import { recase } from '@kristiandupont/recase';
-import { sha256 } from '@noble/hashes/sha256';
-import { type ReadonlySignal } from '@preact/signals';
+import { sha256 } from '@noble/hashes/sha2';
+import { type ReadonlySignal } from '@preact/signals-core';
 import { Tx as SdkTxDirect } from 'cosmjs-types/cosmos/tx/v1beta1/tx.js';
-import { BlockID } from 'cosmjs-types/tendermint/types/types.js';
-import { ABCIQuery, isABCIQuery } from './abciquery.js';
+import { type BlockID } from 'cosmjs-types/tendermint/types/types.js';
+import { type ABCIQuery } from './abciquery.js';
 import { TendermintQuery } from './tmquery.js';
-import { AminoTxOptions, type CosmosTx, CosmosTxAmino, CosmosTxBase, CosmosTxDirect, CosmosTxEncoding, CosmosTxSignal, CosmosTxSignalOptions, DirectTxOptions } from './tx.js';
+import { AminoTxOptions, type CosmosTx, CosmosTxAmino, CosmosTxBase, CosmosTxDirect, CosmosTxSignal, CosmosTxSignalOptions, DirectTxOptions } from './tx.js';
 
 type Unsub = () => void;
 

@@ -324,7 +324,7 @@ export interface SolanaRpcApi {
       commitment?: Types.Commitment,
       minContextSlot?: number,
       /** Encoding of the transaction bytes. Defaults to `'base58'` which is deprecated & slow. */
-      encoding?: 'base58' | 'base64',
+      encoding?: AccountEncoding,
       /** Whether to request replacing the recent blockhash with a valid one.
        * However, mutually exclusive with `sigVerify`.
        */

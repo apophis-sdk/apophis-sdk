@@ -1,5 +1,5 @@
-import { CosmosNetworkConfig, ExternalAccount, type NetworkConfig, Signer } from '@apophis-sdk/core';
-import { pubkey, PublicKey } from '@apophis-sdk/core/crypto/pubkey.js';
+import { AccountData, Any, createAccount, createSigner, fetchAccounts, type CosmosNetworkConfig, type FullAccountData, type NetworkConfig, type Signer } from '@apophis-sdk/core';
+import { pubkey, type PublicKey } from '@apophis-sdk/core/crypto/pubkey.js';
 import { fromBase64, fromHex, toBase64, toHex } from '@apophis-sdk/core/utils.js';
 import { Cosmos, CosmosTx } from '@apophis-sdk/cosmos';
 import { ReadonlySignal, signal } from '@preact/signals-core';
@@ -42,238 +42,65 @@ export namespace ConnectState {
 
 export type ConnectResponse = Awaited<ReturnType<SignClient['connect']>>;
 
+export interface WalletConnectCosmosSigner extends Signer<CosmosNetworkConfig, CosmosTx>, WCSignerBase {
+  /** Refresh accounts for a given network. */
+  refreshAccounts(network: NetworkConfig): Promise<PeerAccount[]>;
+  /** Get a Heartbeat, a liveness monitor for the peer. Exposes a signal you can subscribe to.
+   * The heartbeat must be destroyed when you're done with it.
+   */
+  heartbeat(): Heartbeat;
+}
+
 var signers = new Set<WeakRef<WalletConnectCosmosSigner>>();
 
-export class WalletConnectCosmosSigner extends Signer<CosmosTx> implements WCSignerBase {
-  #session: SessionTypes.Struct | undefined;
-  #signClient: Promise<SignClient>;
-  #networks: CosmosNetworkConfig[] = [];
-  #state = signal<ConnectState | undefined>();
-  readonly type = 'walletconnect';
-  readonly canAutoReconnect = true;
-  readonly displayName = 'WalletConnect';
-  readonly logoURL = LOGO_DATA_URL;
-
-  constructor(public readonly config: WalletConnectSignerConfig) {
-    super();
-    this.available.value = true;
-    this.#signClient = _SignClient.init({
-      projectId: config.projectId,
-      metadata: config.metadata,
-    }).then(client => {
-      client.on('session_update', (args) => {
-        if (args.topic !== this.#session?.topic) return;
-        this.#session.namespaces = args.params.namespaces;
-        for (const network of this.#networks) {
-          this.refreshAccounts(network);
-        }
-      });
-      // TODO: what happens when the session is deleted or expires?
-      return client;
-    });
-    signers.add(new WeakRef(this));
-  }
-
-  probe() {
-    // WalletConnect cannot deterministically tell if the user has any other remote wallets, so it's
-    // always available.
-    return Promise.resolve(true);
-  }
-
-  connect(networks: NetworkConfig[]) {
-    this.#networks = networks = networks.filter(network => network.ecosystem === 'cosmos') as CosmosNetworkConfig[];
-
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-
-    const request = async () => {
-      const client = await this.#signClient;
-
-      const requiredNamespaces: ProposalTypes.RequiredNamespaces = {
-        cosmos: {
-          methods: ['cosmos_getAccounts', 'cosmos_signDirect', 'cosmos_signAmino'],
-          events: [],
-          chains: this.#networks.map(network => 'cosmos:' + network.chainId),
-        },
-      };
-
-      const [session] = client.find({ requiredNamespaces }).filter(session => session.expiry > Date.now() / 1000);
-      if (session) {
-        this.#state.value = {
-          state: 'connected',
-          session,
-          restored: true,
-          timestamp: new Date(),
-        };
-        return;
+export function createWalletConnectSigner(config: WalletConnectSignerConfig): WalletConnectCosmosSigner {
+  let session: SessionTypes.Struct | undefined;
+  const signClient = _SignClient.init({
+    projectId: config.projectId,
+    metadata: config.metadata,
+  }).then(client => {
+    client.on('session_update', (args) => {
+      if (args.topic !== session?.topic) return;
+      session!.namespaces = args.params.namespaces;
+      for (const network of networks) {
+        refreshAccounts(network);
       }
-
-      const { uri, approval } = await client.connect({ requiredNamespaces });
-
-      approval()
-        .then(session => {
-          clearTimeout(timeout);
-          this.#state.value = {
-            state: 'connected',
-            session,
-            restored: false,
-            timestamp: new Date(),
-          };
-        })
-        .catch(error => {
-          if (error instanceof Error && error.message === 'Proposal expired') {
-            request();
-          } else {
-            this.#state.value = {
-              state: 'error',
-              error,
-              timestamp: new Date(),
-            };
-          }
-        });
-
-      this.#state.value = {
-        state: 'pending',
-        uri,
-        timestamp: new Date(),
-        cancel: () => {
-          clearTimeout(timeout);
-          this.#state.value = {
-            state: 'error',
-            error: new WalletConnectSignerError('Cancelled'),
-            timestamp: new Date(),
-          };
-        },
-      };
-    };
-    request();
-
-    return new Promise<ExternalAccount[]>((resolve, reject) => {
-      const unsub = this.#state.subscribe(state => {
-        if (!state) return;
-        switch (state.state) {
-          case 'error':
-            if (state.error instanceof Error && state.error.message === 'Proposal expired') break;
-            setTimeout(() => unsub(), 1); // hack for when state is already set during initial run
-            reject(state.error);
-            break;
-          case 'connected':
-            setTimeout(() => unsub(), 1);
-            this.#session = state.session;
-            this._reinitAccounts(networks as CosmosNetworkConfig[]).then(resolve).catch(reject);
-            break;
-        }
-      })
     });
-  }
+    // TODO: what happens when the session is deleted or expires?
+    return client;
+  });
 
-  async disconnect() {
-    const client = await this.#signClient;
-    for (const key of client.pairing.keys) {
-      client.pairing.delete(key, { code: 6000, message: 'Disconnecting' });
-    }
-    for (const key of client.session.keys) {
-      client.session.delete(key, { code: 6000, message: 'Disconnecting' });
-    }
-  }
+  let networks: CosmosNetworkConfig[] = [];
+  const state = signal<ConnectState | undefined>();
+  const accounts = signal<AccountData<CosmosNetworkConfig>[]>([]);
 
-  async sign(network: NetworkConfig, tx: CosmosTx): Promise<CosmosTx> {
-    if (network.ecosystem !== 'cosmos') throw new Error('Currently, only Cosmos chains are supported');
-    if (!this.#session) throw new WalletConnectSignerNotConnectedError();
-    const client = await this.#signClient;
-    const { topic } = this.#session;
+  const encode = (data: Uint8Array) => encodeData(data, config.encoding);
+  const decode = (data: string) => decodeData(data, config.encoding);
 
-    const signData = this.getSignData(network);
-    if (!ExternalAccount.isComplete(signData))
-      await this.updateSignData([this.getAccount(network)], [network]);
-    if (!ExternalAccount.isComplete(signData)) throw new WalletConnectSignerError('Failed to load sign data');
+  async function getAccountsForNetwork(network: NetworkConfig): Promise<{ address: string; publicKey: PublicKey; }[]> {
+    if (!session) throw new WalletConnectSignerNotConnectedError();
+    const client = await signClient;
 
-    const sdkTx = tx.sdkTx(network, this);
-    if (!sdkTx.authInfo || !sdkTx.body) throw new WalletConnectSignerError('Invalid transaction');
-
-    const { signature, signed } = await client.request<SignResponse>({
-      topic,
-      chainId: 'cosmos:' + network.chainId,
-      request: {
-        method: 'cosmos_signDirect',
-        params: {
-          signerAddress: signData.address,
-          signDoc: {
-            chainId: network.chainId,
-            accountNumber: signData.accountNumber.toString(),
-            authInfoBytes: this.#encode(AuthInfo.encode(sdkTx.authInfo).finish()),
-            bodyBytes: this.#encode(TxBody.encode(sdkTx.body).finish()),
-          },
-        },
-      },
-    });
-
-    const signedAuthInfo = AuthInfo.decode(this.#decode(signed.authInfoBytes));
-    const signedBody = TxBody.decode(this.#decode(signed.bodyBytes));
-
-    tx.gas = {
-      ...signedAuthInfo.fee,
-      amount: signedAuthInfo.fee?.amount.map(coin => Cosmos.coin(coin.amount, coin.denom)) ?? tx.gas?.amount ?? [],
-      gasLimit: signedAuthInfo.fee?.gasLimit ?? tx.gas?.gasLimit ?? 0n,
-    };
-    tx.memo = signedBody.memo;
-    tx.timeoutHeight = signedBody.timeoutHeight;
-    tx.setSignature(network, this, this.#decode(signature.signature));
-    return tx;
-  }
-
-  async broadcast(tx: CosmosTx): Promise<string> {
-    return await Cosmos.broadcast(tx.network!, tx);
-  }
-
-  /** Refresh accounts for a given network. */
-  async refreshAccounts(network: NetworkConfig): Promise<PeerAccount[]> {
-    if (!this.#session) throw new WalletConnectSignerNotConnectedError();
-    const client = await this.#signClient;
-    const { topic } = this.#session;
+    const { topic } = session;
     const { storage } = client.core;
 
     const key = `apophis:pubkeys:${topic}:${network.chainId}`;
-    await waitForPeer(client, this.#session);
+    let peerAccounts: PeerAccount[] | undefined = await storage.getItem(key);
 
-    const accounts = await client.request<PeerAccount[]>({
-      topic,
-      chainId: 'cosmos:' + network.chainId,
-      request: {
-        method: 'cosmos_getAccounts',
-        params: [],
-      },
-    });
-
-    // note: accounts are stored
-    await storage.setItem(key, accounts);
-
-    return accounts;
-  }
-
-  protected async getAccounts(network: NetworkConfig): Promise<{ address: string; publicKey: PublicKey; }[]> {
-    if (!this.#session) throw new WalletConnectSignerNotConnectedError();
-    const client = await this.#signClient;
-
-    const { topic } = this.#session;
-    const { storage } = client.core;
-
-    const key = `apophis:pubkeys:${topic}:${network.chainId}`;
-    let accounts: PeerAccount[] | undefined = await storage.getItem(key);
-
-    if (!accounts?.length) {
-      accounts = await this.refreshAccounts(network);
+    if (!peerAccounts?.length) {
+      peerAccounts = await refreshAccounts(network);
     }
 
-    return accounts.map(acc => {
+    return peerAccounts.map(acc => {
       if (!['secp256k1', 'ed25519'].includes(acc.algo))
         throw new WalletConnectSignerError(`Unsupported algo: ${acc.algo}`);
-      const publicKey = acc.algo === 'secp256k1' ? pubkey.secp256k1(this.#decode(acc.pubkey)) : pubkey.ed25519(this.#decode(acc.pubkey));
+      const publicKey = acc.algo === 'secp256k1' ? pubkey.secp256k1(decode(acc.pubkey)) : pubkey.ed25519(decode(acc.pubkey));
       return { address: acc.address, publicKey };
     });
   }
 
-  protected async getPublicKeys(network: CosmosNetworkConfig) {
-    const accs = await this.getAccounts(network);
+  async function getPublicKeys(network: CosmosNetworkConfig) {
+    const accs = await getAccountsForNetwork(network);
     const result: Record<string, PublicKey> = {};
     for (const { publicKey } of accs) {
       const bs = typeof publicKey.bytes === 'string' ? publicKey.bytes : toBase64(publicKey.bytes);
@@ -283,58 +110,222 @@ export class WalletConnectCosmosSigner extends Signer<CosmosTx> implements WCSig
     return Object.values(result);
   }
 
-  async updateSignData(accounts: ExternalAccount[], networks = this.#networks) {
-    await Promise.all(accounts.map(async acc => {
-      await Promise.all(networks.map(async network => {
-        if (!acc.isBound(network)) return;
-        const data = acc.getSignData(network);
-        const info = await Cosmos.getAccountInfo(network, data.peek().address).catch(() => null);
-        if (info) {
-          acc.setSignData(network, info.accountNumber, info.sequence);
+  async function refreshAccounts(network: NetworkConfig): Promise<PeerAccount[]> {
+    if (!session) throw new WalletConnectSignerNotConnectedError();
+    const client = await signClient;
+    const { topic } = session;
+    const { storage } = client.core;
+
+    const key = `apophis:pubkeys:${topic}:${network.chainId}`;
+    await waitForPeer(client, session);
+
+    const peerAccounts = await client.request<PeerAccount[]>({
+      topic,
+      chainId: 'cosmos:' + network.chainId,
+      request: {
+        method: 'cosmos_getAccounts',
+        params: [],
+      },
+    });
+
+    // note: accounts are stored
+    await storage.setItem(key, peerAccounts);
+
+    return peerAccounts;
+  }
+
+  async function reinitAccounts(networksToUse = networks) {
+    const accmap: Record<string, AccountData<CosmosNetworkConfig>> = {};
+    for (const network of networksToUse) {
+      const pks = await getPublicKeys(network);
+      for (const pk of pks) {
+        const account = createAccount(network, pk);
+        const key = `${network.chainId}:${account.address}`;
+        if (!accmap[key]) {
+          accmap[key] = account;
         }
-      }));
-    }));
-  }
-
-  #encode = (data: Uint8Array) => encode(data, this.config.encoding);
-  #decode = (data: string) => decode(data, this.config.encoding);
-
-  /** Get a Heartbeat, a liveness monitor for the peer. Exposes a signal you can subscribe to.
-   * The heartbeat must be destroyed when you're done with it.
-   */
-  heartbeat() {
-    if (!this.#session) throw new WalletConnectSignerNotConnectedError();
-    return new Heartbeat(this.#signClient, this.#session.topic).start();
-  }
-
-  get state() {
-    return this.#state as ReadonlySignal<ConnectState | undefined>;
-  }
-
-  protected async _reinitAccounts(networks = this.#networks) {
-    const accmap: Record<string, ExternalAccount> = {};
-    for (const network of networks) {
-      const pks = await this.getPublicKeys(network as CosmosNetworkConfig);
-      this.initAccounts(accmap, network, pks);
+      }
     }
 
-    const accounts = Object.values(accmap);
-    // updateSignData only updates accounts bound to the given networks
-    await this.updateSignData(accounts, networks as CosmosNetworkConfig[]);
-    return this.accounts.value = accounts;
+    const newAccounts = Object.values(accmap);
+    accounts.value = newAccounts;
+    return newAccounts;
   }
 
-  static async resetAll() {
-    for (const signer of getSigners()) {
-      await signer._reinitAccounts();
-    }
-  }
+  const signer = createSigner<CosmosNetworkConfig, CosmosTx>((api) => {
+    return {
+      type: 'walletconnect',
+      displayName: 'WalletConnect',
+      logoURL: LOGO_DATA_URL,
+      canAutoReconnect: true,
+      available: signal(true),
+      accounts,
 
-  static async updateAll() {
-    for (const signer of getSigners()) {
-      await signer.updateSignData(signer.accounts.peek());
-    }
-  }
+      probe: async () => {
+        // WalletConnect cannot deterministically tell if the user has any other remote wallets, so it's
+        // always available.
+        return true;
+      },
+      connect: async (networksToConnect: CosmosNetworkConfig[]) => {
+        networks = networksToConnect.filter(network => network.ecosystem === 'cosmos') as CosmosNetworkConfig[];
+
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+
+        const request = async () => {
+          const client = await signClient;
+
+          const requiredNamespaces: ProposalTypes.RequiredNamespaces = {
+            cosmos: {
+              methods: ['cosmos_getAccounts', 'cosmos_signDirect', 'cosmos_signAmino'],
+              events: [],
+              chains: networks.map(network => 'cosmos:' + network.chainId),
+            },
+          };
+
+          const [existingSession] = client.find({ requiredNamespaces }).filter(s => s.expiry > Date.now() / 1000);
+          if (existingSession) {
+            session = existingSession;
+            state.value = {
+              state: 'connected',
+              session: existingSession,
+              restored: true,
+              timestamp: new Date(),
+            };
+            return await reinitAccounts(networks);
+          }
+
+          const { uri, approval } = await client.connect({ requiredNamespaces });
+
+          approval()
+            .then(newSession => {
+              clearTimeout(timeout);
+              session = newSession;
+              state.value = {
+                state: 'connected',
+                session: newSession,
+                restored: false,
+                timestamp: new Date(),
+              };
+              return reinitAccounts(networks);
+            })
+            .catch(error => {
+              if (error instanceof Error && error.message === 'Proposal expired') {
+                request();
+              } else {
+                state.value = {
+                  state: 'error',
+                  error,
+                  timestamp: new Date(),
+                };
+              }
+            });
+
+          state.value = {
+            state: 'pending',
+            uri,
+            timestamp: new Date(),
+            cancel: () => {
+              clearTimeout(timeout);
+              state.value = {
+                state: 'error',
+                error: new WalletConnectSignerError('Cancelled'),
+                timestamp: new Date(),
+              };
+            },
+          };
+
+          // Wait for connection
+          return new Promise<AccountData<CosmosNetworkConfig>[]>((resolve, reject) => {
+            const unsub = state.subscribe(currentState => {
+              if (!currentState) return;
+              switch (currentState.state) {
+                case 'error':
+                  if (currentState.error instanceof Error && currentState.error.message === 'Proposal expired') break;
+                  setTimeout(() => unsub(), 1);
+                  reject(currentState.error);
+                  break;
+                case 'connected':
+                  setTimeout(() => unsub(), 1);
+                  reinitAccounts(networks).then(resolve).catch(reject);
+                  break;
+              }
+            });
+          });
+        };
+
+        return await request();
+      },
+      disconnect: async (networksToDisconnect: CosmosNetworkConfig[]) => {
+        const client = await signClient;
+        for (const key of client.pairing.keys) {
+          client.pairing.delete(key, { code: 6000, message: 'Disconnecting' });
+        }
+        for (const key of client.session.keys) {
+          client.session.delete(key, { code: 6000, message: 'Disconnecting' });
+        }
+        networks = networks.filter(n => !networksToDisconnect.includes(n));
+      },
+      sign: async (account: FullAccountData<CosmosNetworkConfig>, tx: CosmosTx) => {
+        if (!session) throw new WalletConnectSignerNotConnectedError();
+        const client = await signClient;
+        const { topic } = session;
+
+        [account] = await fetchAccounts([account]);
+
+        const snapshot = signer.snapshot(account);
+        const sdkTx = tx.sdkTx(snapshot);
+        if (!sdkTx.authInfo || !sdkTx.body) throw new WalletConnectSignerError('Invalid transaction');
+
+        const { signature, signed } = await client.request<SignResponse>({
+          topic,
+          chainId: 'cosmos:' + account.network.chainId,
+          request: {
+            method: 'cosmos_signDirect',
+            params: {
+              signerAddress: account.address,
+              signDoc: {
+                chainId: account.network.chainId,
+                accountNumber: account.accountNumber.toString(),
+                authInfoBytes: encode(AuthInfo.encode(sdkTx.authInfo).finish()),
+                bodyBytes: encode(TxBody.encode(sdkTx.body).finish()),
+              },
+            },
+          },
+        });
+
+        const signedAuthInfo = AuthInfo.decode(decode(signed.authInfoBytes));
+        const signedBody = TxBody.decode(decode(signed.bodyBytes));
+
+        tx.gas = {
+          ...signedAuthInfo.fee,
+          amount: signedAuthInfo.fee?.amount.map((coin: any) => Cosmos.coin(coin.amount, coin.denom)) ?? tx.gas?.amount ?? [],
+          gasLimit: signedAuthInfo.fee?.gasLimit ?? tx.gas?.gasLimit ?? 0n,
+        };
+        tx.messages = signedBody.messages.map(msg => Any.decode(account.network, msg));
+        tx.memo = signedBody.memo;
+        tx.timeoutHeight = signedBody.timeoutHeight;
+        tx.setSignature(snapshot, decode(signature.signature));
+        return tx;
+      },
+      broadcast: async (tx: CosmosTx) => {
+        return await Cosmos.broadcast(tx.network!, tx);
+      },
+    };
+  });
+
+  // Extend signer with WalletConnect-specific methods
+  const wcSigner = Object.assign(signer, {
+    state: state as ReadonlySignal<ConnectState | undefined>,
+    refreshAccounts,
+    heartbeat() {
+      if (!session) throw new WalletConnectSignerNotConnectedError();
+      return new Heartbeat(signClient, session.topic).start();
+    },
+  }) as WalletConnectCosmosSigner;
+
+  signers.add(new WeakRef(wcSigner));
+
+  return wcSigner;
 }
 
 class Heartbeat {
@@ -376,20 +367,18 @@ class Heartbeat {
   }
 }
 
-function encode(data: Uint8Array, encoding: WalletConnectSignerConfig['encoding'] = 'base64') {
+function encodeData(data: Uint8Array, encoding: WalletConnectSignerConfig['encoding'] = 'base64') {
   if (encoding === 'base64') return toBase64(data);
   if (encoding === 'hex') return toHex(data);
   throw new WalletConnectSignerError(`Unsupported encoding: ${encoding}`);
 }
 
-function decode(data: string, encoding: WalletConnectSignerConfig['encoding'] = 'base64') {
+function decodeData(data: string, encoding: WalletConnectSignerConfig['encoding'] = 'base64') {
   if (encoding === 'base64') return fromBase64(data);
   if (encoding === 'hex') return fromHex(data);
   throw new WalletConnectSignerError(`Unsupported encoding: ${encoding}`);
 }
 
-// periodically refresh sign data
-setTimeout(WalletConnectCosmosSigner.updateAll, 30000);
 
 function getSigners() {
   const result: WalletConnectCosmosSigner[] = [];

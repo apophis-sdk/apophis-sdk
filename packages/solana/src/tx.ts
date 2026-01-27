@@ -1,4 +1,4 @@
-import type { Signer, SolanaNetworkConfig, TxBase, TxStatus } from '@apophis-sdk/core';
+import type { BoundSignerSnapshot, Signer, SolanaNetworkConfig, TxBase, TxStatus } from '@apophis-sdk/core';
 import { toBase64 } from '@apophis-sdk/core/utils.js';
 import { ReadonlyUint8Array } from '@solana/codecs-core';
 import { AccountRole, type Instruction } from '@solana/instructions';
@@ -18,8 +18,7 @@ interface CollectAccountsResult {
 export class SolanaTx implements TxBase {
   readonly ecosystem = 'solana';
   #status: TxStatus = 'unsigned';
-  #signatures: Map<Signer<SolanaTx>, Uint8Array> = new Map();
-  #network: SolanaNetworkConfig | undefined;
+  #signatures: Map<BoundSignerSnapshot<SolanaNetworkConfig, SolanaTx>, Uint8Array> = new Map();
   #hash: string | undefined;
   #error: string | undefined;
 
@@ -34,15 +33,15 @@ export class SolanaTx implements TxBase {
     public recentBlockhash: string | undefined,
   ) {}
 
-  setSignature(network: SolanaNetworkConfig, signer: Signer<SolanaTx>, signature: Uint8Array): this {
+  setSignature(signer: BoundSignerSnapshot<SolanaNetworkConfig, SolanaTx>, signature: Uint8Array): this {
     this.#status = 'signed';
-    this.#network = network;
     this.#signatures = new Map([[signer, signature]]);
     return this;
   }
 
-  addSignature(network: SolanaNetworkConfig, signer: Signer<SolanaTx>, signature: Uint8Array): this {
-    if (this.#network && this.#network !== network) throw new Error('Network mismatch');
+  addSignature(signer: BoundSignerSnapshot<SolanaNetworkConfig, SolanaTx>, signature: Uint8Array): this {
+    if (this.#signatures.size > 0 && this.#signatures.keys().next().value!.network !== signer.network)
+      throw new Error('Network mismatch');
     this.#status = 'signed';
     this.#signatures.set(signer, signature);
     return this;
@@ -64,20 +63,20 @@ export class SolanaTx implements TxBase {
     return this.signer.broadcast(this);
   }
 
-  async simulate(network: SolanaNetworkConfig, signer: Signer<SolanaTx>): Promise<SimulationResult<'base64'>> {
-    Solana.rpc(network).simulateTransaction(
-      toBase64(this.messageBytes(network, signer) as Uint8Array),
+  async simulate(signer: BoundSignerSnapshot<SolanaNetworkConfig, SolanaTx>): Promise<SimulationResult<'base64'>> {
+    const response = await Solana.rpc(signer.network).simulateTransaction(
+      toBase64(this.messageBytes(signer) as Uint8Array),
       {
         encoding: 'base64',
         replacementBlockhash: this.recentBlockhash === undefined,
       },
     );
-    throw new Error('Not yet implemented');
+    return response.value;
   }
 
   /** Compile the {@link CompiledTransactionMessage} from this transaction's `instructions`. */
-  message(network: SolanaNetworkConfig, signer: Signer<SolanaTx>): CompiledTransactionMessage {
-    const { accounts, header } = this.#collectAccounts(network, signer);
+  message(signer: BoundSignerSnapshot<SolanaNetworkConfig, SolanaTx>): CompiledTransactionMessage {
+    const { accounts, header } = this.#collectAccounts(signer);
 
     return {
       version: 0,
@@ -90,10 +89,10 @@ export class SolanaTx implements TxBase {
     };
   }
 
-  #collectAccounts(network: SolanaNetworkConfig, signer: Signer<SolanaTx>): CollectAccountsResult {
+  #collectAccounts(signer: BoundSignerSnapshot<SolanaNetworkConfig, SolanaTx>): CollectAccountsResult {
     const map: Record<string, AccountRole> = {};
 
-    map[signer.address(network)] = AccountRole.WRITABLE_SIGNER;
+    map[signer.address] = AccountRole.WRITABLE_SIGNER;
 
     for (const inst of this.instructions) {
       map[inst.programAddress] = AccountRole.READONLY;
@@ -148,14 +147,15 @@ export class SolanaTx implements TxBase {
   /** Compile the {@link SolanaMessage} from this transaction's `instructions`
    * into a `Uint8Array`. The message is the actual payload to be signed.
    */
-  messageBytes(network: SolanaNetworkConfig, signer: Signer<SolanaTx>): ReadonlyUint8Array {
-    return getCompiledTransactionMessageEncoder().encode(this.message(network, signer));
+  messageBytes(signer: BoundSignerSnapshot<SolanaNetworkConfig, SolanaTx>): ReadonlyUint8Array {
+    return getCompiledTransactionMessageEncoder().encode(this.message(signer));
   }
 
   get status() { return this.#status }
+  /** Gets the primary signer of the transaction. This signer is typically also the one to pay the transaction gas fees. */
   get signer() { return this.#signatures.keys().next().value }
   get signatures() { return this.#signatures }
-  get network() { return this.#network }
+  get network() { return this.#signatures.keys().next().value?.network }
   get hash() { return this.#hash }
   get error() { return this.#error as string | undefined }
 }

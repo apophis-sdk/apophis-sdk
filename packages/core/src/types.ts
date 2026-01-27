@@ -1,5 +1,5 @@
 import type { NetworkConfig } from './networks.js';
-import type { Signer } from './signer.js';
+import type { BoundSignerSnapshot } from './signer.js';
 
 export { NetworkConfig };
 
@@ -27,16 +27,16 @@ export interface TxBase {
   /** Primary signer of the transaction. Typically the one to pay the gas fees &
    * broadcast the transaction onchain. If undefined, the transaction is unsigned.
    */
-  get signer(): Signer<any> | undefined;
-  get signatures(): Map<Signer<any>, Uint8Array>;
+  get signer(): BoundSignerSnapshot<any> | undefined;
+  get signatures(): Map<BoundSignerSnapshot<any>, Uint8Array>;
   get network(): NetworkConfig | undefined;
   get hash(): string | undefined;
   get error(): string | undefined;
 
   /** Set the transaction signature. Any existing signatures will be replaced. */
-  setSignature(network: NetworkConfig, signer: Signer<any>, signature: Uint8Array): this;
+  setSignature(signer: BoundSignerSnapshot<any>, signature: Uint8Array): this;
   /** Add a signature of the given signer to the transaction. */
-  addSignature(network: NetworkConfig, signer: Signer<any>, signature: Uint8Array): this;
+  addSignature(signer: BoundSignerSnapshot<any>, signature: Uint8Array): this;
   /** Update internal state to indicate that the transaction was confirmed. */
   confirm(hash: string): void;
   /** Update internal state to indicate that the transaction failed. */

@@ -1,7 +1,7 @@
-import { PublicKey } from './crypto/pubkey.js';
-import { CosmosEndpoint, SolanaEndpoint } from './endpoints.js';
-import { CosmosNetworkConfig, SolanaNetworkConfig, type NetworkConfig } from './networks.js';
-import { ExternalAccount } from './signer.js';
+import type { PublicKey } from './crypto/pubkey.js';
+import type { CosmosEndpoint, SolanaEndpoint } from './endpoints.js';
+import type { CosmosNetworkConfig, SolanaNetworkConfig, NetworkConfig } from './networks.js';
+import type { AccountData, FullAccountData } from './signer.js';
 
 const MiddlewareRegistered = Symbol('MiddlewareRegistered');
 
@@ -16,7 +16,7 @@ export interface Middleware {
 }
 
 export interface MiddlewareAccounts {
-  update(account: ExternalAccount, network: NetworkConfig): Promise<void>;
+  fetch(account: AccountData): Promise<FullAccountData>;
 }
 
 export interface MiddlewareAddresses {

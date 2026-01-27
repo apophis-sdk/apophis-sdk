@@ -1,5 +1,5 @@
 import { DefaultMiddlewares } from '@apophis-sdk/core';
-import type { CosmosEndpoint, CosmosNetworkConfig, ExternalAccount, FullAccountData, NetworkConfig } from '@apophis-sdk/core';
+import type { AccountData, CosmosEndpoint, CosmosNetworkConfig } from '@apophis-sdk/core';
 import type { MiddlewareImpl } from '@apophis-sdk/core/middleware.js';
 import { CosmosPubkeyMiddleware } from './crypto/pubkey.js';
 import { AminoMiddleware } from './encoding/amino.js';
@@ -21,7 +21,7 @@ export function setEndpoint(network: CosmosNetworkConfig, which: CosmosEndpoint,
 }
 
 export const CosmosMiddleware: MiddlewareImpl = {
-  accounts: { update: updateAccount },
+  accounts: { fetch: fetchAccount },
   endpoints: { get: getEndpoint, list: listEndpoints },
 };
 
@@ -32,20 +32,18 @@ export const DefaultCosmosMiddlewares = [
   AminoMiddleware,
 ];
 
-async function updateAccount(account: ExternalAccount, network: NetworkConfig) {
+async function fetchAccount(account: AccountData) {
+  const { network, address } = account;
   if (network.ecosystem !== 'cosmos') return;
-  const signData = account.getSignData(network);
-  const curr = signData.peek();
   try {
-    const info = await Cosmos.getAccountInfo(network, curr.address);
-    const { sequence: currSequence = 0n } = curr as FullAccountData;
-    signData.value = {
-      ...curr,
+    const info = await Cosmos.getAccountInfo(network, address);
+    return {
+      ...account,
       accountNumber: info.accountNumber,
-      sequence: info.sequence > currSequence ? info.sequence : currSequence,
+      sequence: info.sequence,
     };
   } catch {
-    console.warn(`Failed to update account info for ${curr.address} on ${network.chainId}`);
+    console.warn(`Failed to fetch account info for ${address} on ${network.chainId}`);
   }
 }
 

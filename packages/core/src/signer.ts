@@ -1,232 +1,260 @@
-import { Signal, signal } from '@preact/signals-core';
+import { computed, type ReadonlySignal, signal, type Signal } from '@preact/signals-core';
+import { addresses } from './address.js';
 import type { PublicKey } from './crypto/pubkey.js';
 import type { NetworkConfig } from './networks.js';
-import type { TxBase } from './types.js';
-import { addresses } from './address.js';
 import { mw } from './middleware.js';
-import { toBase64 } from './utils.js';
+import type { TxBase } from './types.js';
 
-export type AccountData = FullAccountData | PartialAccountData;
-export type ExternalAccountMap = Record<string, ExternalAccount>;
+export type AccountData<NetConf extends NetworkConfig = NetworkConfig> = FullAccountData<NetConf> | PartialAccountData<NetConf>;
+type InputSignal<T> = T | Signal<T>;
 
-export interface FullAccountData {
+export interface PartialAccountData<NetConf extends NetworkConfig = NetworkConfig> {
+  network: NetConf;
   address: string;
   publicKey: PublicKey;
+}
+
+export interface FullAccountData<NetConf extends NetworkConfig = NetworkConfig> extends PartialAccountData<NetConf> {
   accountNumber: bigint;
   sequence: bigint;
 }
 
-export interface PartialAccountData {
-  address: string;
+export interface SignerConfig<NetConf extends NetworkConfig = NetworkConfig> {
+  type: string;
+  displayName: string;
+  logoURL: string | URL | undefined;
+  canAutoReconnect: boolean;
+  available: ReadonlySignal<boolean>;
+  accounts: Signal<AccountData<NetConf>[]>;
+}
+
+export interface SignerCallbacks<NetConf extends NetworkConfig = NetworkConfig, Tx extends TxBase = TxBase> {
+  probe(): Promise<boolean>;
+  connect(networks: NetConf[]): Promise<AccountData<NetConf>[]>;
+  disconnect?(networks: NetConf[]): Promise<void>;
+  sign(account: FullAccountData<NetConf>, tx: Tx): Promise<Tx>;
+  broadcast(tx: Tx): Promise<string>;
+}
+
+export interface SignerApi<NetConf extends NetworkConfig = NetworkConfig> {
+  /** Trigger a refresh of the accounts' onchain data such as account number & sequence. */
+  updateAccounts(accounts: AccountData<NetConf>[]): Promise<void>;
+}
+
+export interface Signer<NetConf extends NetworkConfig = NetworkConfig, Tx extends TxBase = TxBase> extends Readonly<SignerConfig<NetConf>> {
+  /** Known accounts of this signer. */
+  readonly accounts: ReadonlySignal<AccountData<NetConf>[]>;
+  /** Networks this signer is connected to, derived from its `accounts`. */
+  readonly networks: ReadonlySignal<NetConf[]>;
+  /** Connect the signer to the given networks. Any existing connections will be retained.
+   * Only retains unique accounts (by address) across all networks.
+   */
+  connect(networks: NetConf[]): Promise<AccountData<NetConf>[]>;
+  /** Disconnect the signer from the given networks. All accounts on that network will be dropped. */
+  disconnect(networks: NetConf[]): Promise<void>
+  /** Connect the signer to the given networks. Any existing connections will be retained.
+   * Only retains unique accounts (by address) across all networks.
+   */;
+  sign(account: FullAccountData<NetConf>, tx: Tx): Promise<Tx>;
+  /** Broadcast a signed transaction. Returns the tx hash if successful. Allows
+   * the signer to use its own infrastructure if applicable.
+   */
+  broadcast(tx: Tx): Promise<string>;
+  /** Prioritize the given account. It will take precedence over other accounts on the same network. */
+  prioritizeAccount(account: AccountData<NetConf>): void;
+  /** Bump the sequence number of the given account.
+   *
+   * Note: This is generally not necessary, but can be helpful when creating
+   * multiple transactions without waiting for confirmation of each one first.
+   */
+  bumpSequence(account: FullAccountData<NetConf>): void;
+  /** Bind the signer to a network. Returns a `BoundSigner` */
+  bind(network: InputSignal<NetConf | undefined>): BoundSigner<NetConf, Tx>;
+  /** Get a BoundSignerSnapshot for the given account. */
+  snapshot(account: FullAccountData<NetConf>): BoundSignerSnapshot<NetConf, Tx>;
+}
+
+export interface BoundSigner<NetConf extends NetworkConfig = NetworkConfig, Tx extends TxBase = TxBase> {
+  readonly network: Signal<NetConf | undefined>;
+  readonly accounts: ReadonlySignal<AccountData<NetConf>[]>;
+  readonly account: ReadonlySignal<AccountData<NetConf> | undefined>;
+  readonly publicKey: ReadonlySignal<PublicKey | undefined>;
+  readonly addresses: ReadonlySignal<string[]>;
+  readonly address: ReadonlySignal<string | undefined>;
+  sign(tx: Tx): Promise<Tx>;
+  broadcast(tx: Tx): Promise<string>;
+  /** Get a snapshot of this bound signer without any signals.
+   * If this `BoundSigner` is not actually bound to a network, returns `undefined`.
+   */
+  snapshot(): BoundSignerSnapshot<NetConf, Tx> | undefined;
+}
+
+export interface BoundSignerSnapshot<NetConf extends NetworkConfig = NetworkConfig, Tx extends TxBase = TxBase> {
+  network: NetConf;
+  accounts: AccountData<NetConf>[];
+  account: AccountData<NetConf>;
   publicKey: PublicKey;
+  addresses: string[];
+  address: string;
+  sign(tx: Tx): Promise<Tx>;
+  broadcast(tx: Tx): Promise<string>;
 }
 
-/** A signer represents a wallet or another provider that can sign transactions. Typically, a signer
- * has multiple accounts for different networks, sometimes even for the same network. A Signer
- * implementation should cache the AccountData for each network and keep their sequence numbers up to date.
- */
-export abstract class Signer<Tx extends TxBase = TxBase> {
-  /** Array of registered signers. Can be used to list available signers in a frontend. */
-  static readonly signers: Signer[] = [];
+const _signers = signal<Signer[]>([]);
+export const signers = _signers as ReadonlySignal<Signer[]>;
 
-  /** Signal of whether this signer is available / has been detected. */
-  readonly available = signal(false);
-  /** Signal of AccountData for each connected network. */
-  readonly accounts = signal<ExternalAccount[]>([]);
-  /** Computed signal of networks that this signer was connected to. */
-  readonly networks = signal<NetworkConfig[]>([]);
+export function createSigner<
+  NetConf extends NetworkConfig = NetworkConfig,
+  Tx extends TxBase = TxBase,
+>(configFactory: (api: SignerApi<NetConf>) => SignerConfig<NetConf> & SignerCallbacks<NetConf, Tx>): Signer<NetConf, Tx> {
+  const updateAccounts: SignerApi<NetConf>['updateAccounts'] = async () => {};
 
-  /** Whether this signer can autoconnect once a session has been previously established. */
-  abstract get canAutoReconnect(): boolean;
-  /** Unique type identifier of this signer to help distinguish which you're using. Or at least it should be unique. */
-  abstract get type(): string;
-  /** The name of the wallet to show as tooltip or when no logo is available. */
-  abstract get displayName(): string;
-  /** The URL of the wallet logo. Will be shown in an <img> HTML tag. If omitted, the frontend integration should fall back to `displayName`. */
-  abstract get logoURL(): string | URL | undefined;
+  const config = configFactory({ updateAccounts });
 
-  /** Check whether this signer is available. */
-  abstract probe(): Promise<boolean>;
-  /** Connect the signer for the given networks. Returns `ExternalAccount`s (independent of the network). */
-  abstract connect(networks: NetworkConfig[]): Promise<ExternalAccount[]>;
-  /** Disconnect the signer. Some signers may need additional cleanup. */
-  async disconnect() {}
-  /** Sign a transaction. Returns the same transaction, populated with the signature. */
-  abstract sign(network: NetworkConfig, tx: Tx): Promise<Tx>;
-  /** Broadcast a signed transaction. Returns the tx hash if successful. */
-  abstract broadcast(tx: Tx): Promise<string>;
+  const signer = {
+    type: config.type,
+    displayName: config.displayName,
+    logoURL: config.logoURL,
+    canAutoReconnect: config.canAutoReconnect,
+    available: config.available,
+    accounts: config.accounts,
+    networks: computed((): NetConf[] => Array.from(new Set(config.accounts.value.map(acc => acc.network)))),
 
-  /** Initialize the `ExternalAccount`s in the `accounts` signal for the given public keys. It
-   * populates the given `accounts` object with the new accounts. `accounts` keys can be computed
-   * from the public key using `Signer.getPubkeyIndex`.
-   */
-  protected initAccounts(accounts: ExternalAccountMap, network: NetworkConfig, pubkeys: PublicKey[]) {
-    for (const pubkey of pubkeys) {
-      const idx = Signer.getPubkeyIndex(pubkey);
-      if (!accounts[idx]) {
-        accounts[idx] = new ExternalAccount(pubkey);
-      }
-      accounts[idx].bind([network]);
-    }
-  }
+    connect: async (networks: NetConf[]) => {
+      const accounts = config.accounts.peek().filter(acc => !networks.includes(acc.network));
+      const newAccounts = await config.connect(networks);
+      const result = config.accounts.value = [...accounts, ...newAccounts];
+      updateAccounts(result).catch(() => {});
+      return result;
+    },
+    disconnect: async (networks: NetConf[]) => {
+      await config.disconnect?.(networks);
+      config.accounts.value = config.accounts.peek().filter(acc => !networks.includes(acc.network));
+    },
+    sign: config.sign,
+    broadcast: config.broadcast,
 
-  /** Activate the given account. The account must be one of the accounts in the `accounts` array signal. */
-  activateAccount(account: ExternalAccount) {
-    const prev = this.accounts.peek();
-    const idx = prev.findIndex(acc => Signer.getPubkeyIndex(acc.publicKey) === Signer.getPubkeyIndex(account.publicKey));
-    if (idx === -1) throw new Error('Unknown account');
-    this.accounts.value = [
-      account,
-      ...prev.slice(0, idx),
-      ...prev.slice(idx + 1),
-    ];
-  }
+    prioritizeAccount: (account: AccountData<NetConf>) => {
+      const idx = signer.accounts.peek().indexOf(account);
+      if (idx === -1) throw new Error('Unknown account');
+      const prev = config.accounts.peek();
+      config.accounts.value = [
+        account,
+        ...prev.slice(0, idx),
+        ...prev.slice(idx + 1),
+      ];
+    },
 
-  /** Get the first account that is bound to the given network. If you wish to choose a different account,
-   * you can prioritize it by calling `activateAccount` with that account.
-   */
-  getAccount(network: NetworkConfig): ExternalAccount {
-    const acc = this.accounts.peek().find(acc => acc.isBound(network));
-    if (!acc) throw new Error(`No account found for network ${network.name}`);
-    return acc;
-  }
+    bumpSequence: (account: FullAccountData<NetConf>) => {
+      const idx = config.accounts.peek().indexOf(account);
+      if (idx === -1) throw new Error('Unknown account');
+      const prev = config.accounts.peek();
+      config.accounts.value = [
+        ...prev.slice(0, idx),
+        { ...account, sequence: account.sequence + 1n },
+        ...prev.slice(idx + 1),
+      ];
+    },
 
-  /** Get the sign data of the currently active account on the given network. */
-  getSignData(network: NetworkConfig): AccountData {
-    return this.getAccount(network).getSignData(network).peek();
-  }
+    bind: (network: InputSignal<NetConf | undefined>) => {
+      network = network && 'value' in network ? network : signal(network);
+      const accounts = computed(() => signer.accounts.value.filter(acc => acc.network === network.value));
+      const account = computed(() => accounts.value[0]);
+      const publicKey = computed(() => account.value?.publicKey);
+      const addresses = computed(() => accounts.value.map(acc => acc.address));
+      const address = computed(() => account.value?.address);
 
-  /** Get the public key of the currently active account on the given network. Note that this is a
-   * convenient helper unsuited for use in signals. Use the `accounts` signal property instead.
-   */
-  pubkey(network: NetworkConfig): PublicKey {
-    return this.getAccount(network).getSignData(network).peek().publicKey;
-  }
+      return {
+        network,
+        accounts,
+        account,
+        publicKey,
+        addresses,
+        address,
 
-  /** Get all addresses of the signer on the given network. Most commonly, signers only have one account. */
-  addresses(network: NetworkConfig): string[] {
-    return this.accounts.peek().map(a => a.getSignData(network).peek().address);
-  }
+        sign: async (tx: Tx) => {
+          if (!account.value) throw new Error('No active account');
+          if (!isFullAccountData(account.value)) throw new Error('Account data incomplete');
+          return await signer.sign(account.value, tx);
+        },
 
-  /** Get the first address of the signer on the given network. Most commonly, signers only have one
-   * account. *Note* that this is a convenient helper unsuited for use in signals. Use the `accounts`
-   * signal property instead.
-   */
-  address(network: NetworkConfig): string {
-    return this.getAccount(network).getSignData(network).peek().address;
-  }
+        broadcast: async (tx: Tx) => {
+          return await signer.broadcast(tx);
+        },
 
-  /** Register a signer instance. Other components can then use this to find the signer in `Signer.signers`. */
-  static register(...signers: Signer[]) {
-    for (const signer of signers) {
-      if (this.signers.find(s => s.type === signer.type))
-        throw new Error(`Signer ${signer.type} already registered`);
-      this.signers.push(signer);
-    }
-    return this;
-  }
+        snapshot: () => {
+          if (!network.peek()) return undefined;
+          const acc = account.peek();
+          return {
+            network: network.peek()!,
+            accounts: accounts.peek(),
+            account: account.peek()!,
+            publicKey: publicKey.peek()!,
+            addresses: addresses.peek(),
+            address: address.peek()!,
+            sign: async (tx: Tx) => {
+              if (!acc || !isFullAccountData(acc)) throw new Error('Account data incomplete');
+              return await signer.sign(acc, tx);
+            },
+            broadcast: async (tx: Tx) => {
+              return await signer.broadcast(tx);
+            },
+          } satisfies BoundSignerSnapshot<NetConf, Tx>;
+        },
+      } satisfies BoundSigner<NetConf, Tx>;
+    },
 
-  /** Get a unique identifier for the given public key for comparison & indexing. */
-  static getPubkeyIndex(pubkey: PublicKey) {
-    const bs = typeof pubkey.bytes === 'string' ? pubkey.bytes : toBase64(pubkey.bytes);
-    return `${pubkey.type}:${bs}`;
-  }
+    snapshot: (account: FullAccountData<NetConf>) => {
+      return {
+        network: account.network,
+        accounts: [account],
+        account,
+        publicKey: account.publicKey,
+        addresses: [account.address],
+        address: account.address,
+        sign: async (tx: Tx) => {
+          return await signer.sign(account, tx);
+        },
+        broadcast: async (tx: Tx) => {
+          return await signer.broadcast(tx);
+        },
+      } satisfies BoundSignerSnapshot<NetConf, Tx>;
+    },
+  };
+
+  _signers.value = [
+    ..._signers.peek(),
+    signer,
+  ];
+
+  return signer;
 }
 
-/** ExternalAccounts are abstractions for accounts managed by private keys, and represented with public keys
- * and corresponding addresses.
- *
- * Every account must be bound to a specific network. This is because every account can be used with every
- * network that uses the same private key length, so the system has no way of knowing which networks an
- * account is actually active on.
- *
- * The `update` method can be used to update the sign data of the account on a given network. It is recommended
- * to call this method before creating a transaction. If the sign data is missing, signer integrations should
- * automatically call this method before signing or simulating a transaction.
- *
- * Alternatively, you may also specify the account number & sequence number directly. This is useful, for example,
- * when implementing a signer that is never connected to the internet.
- */
-export class ExternalAccount {
-  #data = new Map<NetworkConfig, Signal<AccountData>>();
+export const isFullAccountData = (account: AccountData): account is FullAccountData =>
+  'accountNumber' in account && 'sequence' in account;
 
-  constructor(public readonly publicKey: PublicKey) {}
+export const createAccount = <NetConf extends NetworkConfig = NetworkConfig>(network: NetConf, publicKey: PublicKey): PartialAccountData<NetConf> => ({
+  network,
+  address: addresses.compute(network, publicKey),
+  publicKey,
+});
 
-  /** Bind the account to the given networks. When a signer chooses an account for a transaction, it will
-   * choose the first account that is bound to that specific network.
-   */
-  bind(networks: NetworkConfig[]) {
-    for (const network of networks) {
-      if (this.#data.has(network)) continue;
-      this.#data.set(network, signal<AccountData>({
-        address: addresses.compute(network, this.publicKey),
-        publicKey: this.publicKey,
-      }));
-    }
-  }
+export const updateAccount = <NetConf extends NetworkConfig = NetworkConfig>(account: AccountData<NetConf>, accountNumber: bigint, sequence: bigint): FullAccountData<NetConf> => ({
+  ...account,
+  accountNumber,
+  sequence,
+});
 
-  /** Check whether this account has been previously bound to the given network. */
-  isBound(network: NetworkConfig) {
-    return this.#data.has(network);
-  }
-
-  /** Update sign data of this account on the given networks. If none specified, all previously bound
-   * networks will be updated. Will only update bound networks. Any other networks will be ignored.
-   * The sequence number will only be updated if it is greater than the current sequence number.
-   */
-  async update(networks?: NetworkConfig[]) {
-    networks ??= Array.from(this.#data.keys());
-    await Promise.all(networks.map(async network => {
-      if (!this.isBound(network)) return;
-      await mw('accounts', 'update').inv().notify(this, network);
-    }));
-  }
-
-  /** Bump the sequence number for the given network. */
-  bumpSequence(network: NetworkConfig) {
-    const signData = this.getSignData(network);
-    const old = signData.peek();
-    if (!ExternalAccount.isComplete(old)) throw new Error('Sign data incomplete');
-    signData.value = {
-      ...old,
-      sequence: old.sequence + 1n,
-    };
-    return this;
-  }
-
-  /** Reset the sequence number. The next time `update` is called, the sequence number will be re-populated from the network. */
-  resetSequence(network: NetworkConfig) {
-    const signData = this.getSignData(network);
-    const old = signData.peek();
-    if (!ExternalAccount.isComplete(old)) throw new Error('Sign data incomplete');
-    signData.value = {
-      ...old,
-      sequence: 0n,
-    };
-    return this;
-  }
-
-  /** Override the sign data. Useful for offline signers which track the account number & sequence themselves. */
-  setSignData(network: NetworkConfig, accountNumber: bigint, sequence: bigint) {
-    const signData = this.getSignData(network);
-    signData.value = {
-      ...signData.peek(),
-      accountNumber,
-      sequence,
-    };
-  }
-
-  getSignData(network: NetworkConfig): Signal<AccountData> {
-    if (!this.#data.has(network)) {
-      this.#data.set(network, signal<AccountData>({
-        address: addresses.compute(network, this.publicKey),
-        publicKey: this.publicKey,
-      }));
-    }
-    return this.#data.get(network)!;
-  }
-
-  static isComplete(data: AccountData): data is FullAccountData {
-    return 'accountNumber' in data && 'sequence' in data;
-  }
+export async function fetchAccounts<NetConf extends NetworkConfig = NetworkConfig>(accounts: AccountData<NetConf>[]): Promise<FullAccountData<NetConf>[]> {
+  return Promise.all(accounts.map(account => mw('accounts', 'fetch').inv().fifo(account) as any));
 }
+
+export const bumpSequence = <NetConf extends NetworkConfig = NetworkConfig>(account: FullAccountData<NetConf>): FullAccountData<NetConf> => ({
+  ...account,
+  sequence: account.sequence + 1n,
+});
+
+export const resetSequence = <NetConf extends NetworkConfig = NetworkConfig>(account: FullAccountData<NetConf>): FullAccountData<NetConf> => ({
+  ...account,
+  sequence: 0n,
+});

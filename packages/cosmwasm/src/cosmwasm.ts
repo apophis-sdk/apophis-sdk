@@ -1,15 +1,14 @@
 import { BytesMarshalUnit } from '@apophis-sdk/core/marshal.js';
 import { type CosmosNetworkConfig } from '@apophis-sdk/core/networks.js';
-import { type Signer } from '@apophis-sdk/core/signer.js';
+import { type BoundSignerSnapshot, type Signer } from '@apophis-sdk/core/signer.js';
 import type { Coin, TransactionResponse } from '@apophis-sdk/cosmos/types.sdk.js';
 import { fromBase64, fromHex, fromUtf8, toBase64, toUtf8 } from '@apophis-sdk/core/utils.js';
-import { Cosmos } from '@apophis-sdk/cosmos';
+import { Cosmos, CosmosTx } from '@apophis-sdk/cosmos';
 import { extendDefaultMarshaller, ToJsonMarshalUnit } from '@kiruse/marshal';
 import { Contract } from './msg/contracts.js';
 
 export interface InstantiateOptions {
-  network: CosmosNetworkConfig;
-  signer: Signer;
+  signer: BoundSignerSnapshot<CosmosNetworkConfig, CosmosTx>;
   codeId: bigint;
   label: string;
   msg: Uint8Array;
@@ -42,35 +41,26 @@ export class CosmWasmApi {
   ) {}
 
   /** Convenience function to store the given contract code on-chain. Waits for block inclusion & returns the new code's ID. */
-  async store(network: CosmosNetworkConfig, signer: Signer, code: Uint8Array) {
+  async store(signer: BoundSignerSnapshot<CosmosNetworkConfig, CosmosTx>, code: Uint8Array) {
     const tx = Cosmos.tx([
-      new Contract.StoreCode({ sender: signer.address(network), wasmByteCode: code }),
+      new Contract.StoreCode({ sender: signer.address, wasmByteCode: code }),
     ]);
 
-    const { gasLimit } = await tx.estimateGas(network, signer);
-    tx.computeGas(network, gasLimit + 50000n, true);
+    const { gasLimit } = await tx.estimateGas(signer);
+    tx.computeGas(signer.network, gasLimit + 50000n, true);
 
-    await signer.sign(network, tx);
-    await Cosmos.ws(network).ready(10000);
-    const resultPromise = Cosmos.ws(network).expectTx(tx);
+    await signer.sign(tx);
+    await Cosmos.ws(signer.network).ready(10000);
+    const resultPromise = Cosmos.ws(signer.network).expectTx(tx);
     await tx.broadcast();
-
-    const result = await resultPromise;
-
-    const codeIds = Cosmos.getEventValues(result.events, 'store_code', 'code_id');
-    if (codeIds.length === 0)
-      throw new Error('Failed to store code: no code IDs found in transaction logs');
-    if (codeIds.length > 1)
-      console.warn('Unexpected number of code IDs in transaction logs, returning first:', codeIds);
-    return BigInt(codeIds[0]);
   }
 
   /** Convenience function to instantiate a contract from a previously stored code. Waits for block inclusion & returns the new contract's address. */
-  async instantiate({ network, signer, codeId, label, admin, msg, funds = [] }: InstantiateOptions): Promise<string> {
+  async instantiate({ signer, codeId, label, admin, msg, funds = [] }: InstantiateOptions): Promise<string> {
     const tx = Cosmos.tx([
       new Contract.Instantiate({
-        admin: admin ?? signer.address(network),
-        sender: signer.address(network),
+        admin: admin ?? signer.address,
+        sender: signer.address,
         codeId,
         label,
         msg,
@@ -78,12 +68,12 @@ export class CosmWasmApi {
       }),
     ]);
 
-    const { gasLimit } = await tx.estimateGas(network, signer);
-    tx.computeGas(network, gasLimit + 50000n, true);
+    const { gasLimit } = await tx.estimateGas(signer);
+    tx.computeGas(signer.network, gasLimit + 50000n, true);
 
-    await signer.sign(network, tx);
-    await Cosmos.ws(network).ready(10000);
-    const resultPromise = Cosmos.ws(network).expectTx(tx);
+    await signer.sign(tx);
+    await Cosmos.ws(signer.network).ready(10000);
+    const resultPromise = Cosmos.ws(signer.network).expectTx(tx);
     await tx.broadcast();
 
     const result = await resultPromise;
@@ -97,49 +87,49 @@ export class CosmWasmApi {
   }
 
   /** Convenience function to migrate a contract to a new code. Waits for block inclusion & returns the transaction response. */
-  async migrate(network: CosmosNetworkConfig, signer: Signer, contractAddress: string, codeId: bigint, msg: any): Promise<TransactionResponse> {
+  async migrate(signer: BoundSignerSnapshot<CosmosNetworkConfig, CosmosTx>, contractAddress: string, codeId: bigint, msg: any): Promise<TransactionResponse> {
     const tx = Cosmos.tx([
       new Contract.Migrate({
-        sender: signer.address(network),
+        sender: signer.address,
         contract: contractAddress,
         codeId,
         msg,
       }),
     ]);
 
-    const { gasLimit } = await tx.estimateGas(network, signer);
-    tx.computeGas(network, gasLimit + 50000n, true);
+    const { gasLimit } = await tx.estimateGas(signer);
+    tx.computeGas(signer.network, gasLimit + 50000n, true);
 
-    await signer.sign(network, tx);
-    await Cosmos.ws(network).ready(10000);
-    const resultPromise = Cosmos.ws(network).expectTx(tx);
+    await signer.sign(tx);
+    await Cosmos.ws(signer.network).ready(10000);
+    const resultPromise = Cosmos.ws(signer.network).expectTx(tx);
     await tx.broadcast();
 
     await resultPromise;
-    return await Cosmos.ws(network).getTx(tx.hash);
+    return await Cosmos.ws(signer.network).getTx(tx.hash);
   }
 
   /** Convenience function to invoke a contract execution. Waits for block inclusion & returns the transaction response. */
-  async execute(network: CosmosNetworkConfig, signer: Signer, contractAddress: string, msg: any, funds: Coin[] = []): Promise<TransactionResponse> {
+  async execute(signer: BoundSignerSnapshot<CosmosNetworkConfig, CosmosTx>, contractAddress: string, msg: any, funds: Coin[] = []): Promise<TransactionResponse> {
     const tx = Cosmos.tx([
       new Contract.Execute({
-        sender: signer.address(network),
+        sender: signer.address,
         contract: contractAddress,
         msg,
         funds,
       }),
     ]);
 
-    const { gasLimit } = await tx.estimateGas(network, signer);
-    tx.computeGas(network, gasLimit + 50000n, true);
+    const { gasLimit } = await tx.estimateGas(signer);
+    tx.computeGas(signer.network, gasLimit + 50000n, true);
 
-    await signer.sign(network, tx);
-    await Cosmos.ws(network).ready(10000);
-    const resultPromise = Cosmos.ws(network).expectTx(tx);
+    await signer.sign(tx);
+    await Cosmos.ws(signer.network).ready(10000);
+    const resultPromise = Cosmos.ws(signer.network).expectTx(tx);
     await tx.broadcast();
 
     await resultPromise;
-    return await Cosmos.ws(network).getTx(tx.hash);
+    return await Cosmos.ws(signer.network).getTx(tx.hash);
   }
 
   query = new class {

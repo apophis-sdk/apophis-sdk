@@ -1,8 +1,18 @@
-import { endpoints, ExternalAccount, Signer, type CosmosNetworkConfig } from '@apophis-sdk/core';
-import { pubkey, PublicKey } from '@apophis-sdk/core/crypto/pubkey.js';
-import { fromBase64, toHex } from '@apophis-sdk/core/utils.js';
+import {
+  AccountData,
+  type CosmosNetworkConfig,
+  createAccount,
+  createSigner,
+  endpoints,
+  type FullAccountData,
+  type Signer,
+} from '@apophis-sdk/core';
+import { pubkey } from '@apophis-sdk/core/crypto/pubkey.js';
+import { Any } from '@apophis-sdk/core/encoding/protobuf/any.js';
+import * as utils from '@apophis-sdk/core/utils.js';
 import { Amino, Cosmos, CosmosTx, CosmosTxAmino, CosmosTxDirect, TxMarshaller } from '@apophis-sdk/cosmos';
 import { type Window as KeplrWindow } from '@keplr-wallet/types';
+import { signal } from '@preact/signals-core';
 import { AuthInfo, TxBody } from 'cosmjs-types/cosmos/tx/v1beta1/tx.js';
 import LOGO_DATA_URL from './logos/keplr.js';
 
@@ -12,211 +22,153 @@ declare global {
   }
 }
 
-var signers = new Set<WeakRef<KeplrSigner>>();
 const FAKERS = ['leap'];
 
-export class KeplrSigner extends Signer<CosmosTx> {
-  #networks: CosmosNetworkConfig[] = [];
-  get type() { return 'Keplr' }
-  get displayName() { return 'Keplr' }
-  get logoURL() { return LOGO_DATA_URL }
-  get canAutoReconnect() { return true }
+export interface KeplrLikeSignerConfig {
+  type: string;
+  displayName: string;
+  logoURL: string | URL | undefined;
+  getBackend: () => any;
+  probe: () => boolean;
+  keystoreChangeEvent: string;
+}
 
-  constructor() {
-    super();
-    this.available.value = this.keplrProbe();
-    signers.add(new WeakRef(this));
-  }
+/** Create a new customized Keplr-like signer. This is intended for the integration of other Keplr-forked wallets like Leap.
+ * To use Keplr in your own Dapp, use the exported `Keplr` constant instead.
+ */
+export function createKeplrSigner(config?: Partial<KeplrLikeSignerConfig>): Signer<CosmosNetworkConfig, CosmosTx> {
+  const fullConfig: KeplrLikeSignerConfig = {
+    type: 'Keplr',
+    displayName: 'Keplr',
+    logoURL: LOGO_DATA_URL,
+    getBackend: () => typeof window !== 'undefined' ? window.keplr : undefined,
+    probe: () => typeof window !== 'undefined' && !!window.keplr && !FAKERS.some(f => window.keplr === (window as any)[f]),
+    keystoreChangeEvent: 'keplr_keystorechange',
+    ...config,
+  };
 
-  /** Internal non-async method to prove for presence of Keplr. Can be overridden by Keplr fork integrations like Leap. */
-  keplrProbe(): boolean {
-    return typeof window !== 'undefined' && !!window.keplr && !FAKERS.some(f => window.keplr === (window as any)[f]);
-  }
+  const backend = fullConfig.getBackend();
+  const available = signal(fullConfig.probe());
+  const accounts = signal<AccountData<CosmosNetworkConfig>[]>([]);
+  if (!backend) throw new Error(`${fullConfig.displayName} not available`);
 
-  probe(): Promise<boolean> {
-    return Promise.resolve(this.available.value = this.keplrProbe());
-  }
-
-  async connect(networks: CosmosNetworkConfig[]): Promise<ExternalAccount[]> {
-    const backend = this.backend;
-    if (!backend) throw new Error('Keplr not available');
-    if (!networks.length) throw new Error('No networks provided');
-    this.#networks = networks;
-    await Promise.all(networks.map((network) => backend.experimentalSuggestChain(toChainSuggestion(network))));
-    await backend.enable(networks.map((network) => network.chainId));
-    return this._reinitAccounts(networks);
-  }
-
-  async broadcast(tx: CosmosTx): Promise<string> {
-    const { network } = tx;
-    if (!network) throw new Error('Unsigned transaction');
-
-    try {
-      // note: enum not found in bundle, apparently, so screw it
-      const hashbytes = await this.backend!.sendTx(network.chainId, tx.bytes(), 'sync' as any);
-      const hash = toHex(hashbytes);
-      tx.confirm(hash);
-      this.getAccount(network).bumpSequence(network);
-      return hash;
-    } catch (error: any) {
-      tx.reject(tx.hash!, error);
-      throw error;
-    }
-  }
-
-  /** Load `SignData` for the given networks and update the sign data if applicable. The sequence
-   * number will only be updated if the current sequence number is less than the new one.
-   */
-  async updateSignData(accounts: ExternalAccount[], networks = this.#networks): Promise<void> {
-    await Promise.all(accounts.map(async acc => {
-      await acc.update(networks);
-    }));
-  }
-
-  /** Get the accounts from Keplr. Generally not needed, as you will use the `accounts` signal instead. */
-  async getAccounts(network: CosmosNetworkConfig): Promise<{ address: string; publicKey: PublicKey }[]> {
-    const offlineSigner = this.backend!.getOfflineSigner(network.chainId);
-    return (await offlineSigner.getAccounts())
-      .filter(account => account.algo === 'secp256k1' || account.algo === 'ed25519')
-      .map(account => ({
-        address: account.address,
-        publicKey: account.algo === 'secp256k1'
-          ? pubkey.secp256k1(account.pubkey)
-          : pubkey.ed25519(account.pubkey),
-      }));
-  }
-
-  /** Get all unique public keys across all accounts & across the given networks.
-   *
-   * Often, the same public key is used across multiple networks, so this method
-   * dedupes the public keys.
-   */
-  async getPublicKeys(networks: CosmosNetworkConfig[]): Promise<PublicKey[]> {
-    const map: Record<string, PublicKey> = {};
-    const infos = await Promise.all(networks.map(network => this.getAccounts(network)))
-      .then(infos => infos.flat());
-
-    for (const { publicKey: pub } of infos) {
-      const bs = typeof pub.bytes === 'string' ? pub.bytes : toHex(pub.bytes);
-      const key = `${pub.type}:${bs}`;
-      if (map[key]) continue;
-      map[key] = pub;
-    }
-
-    return Object.values(map);
-  }
-
-  async sign(network: CosmosNetworkConfig, tx: CosmosTx): Promise<CosmosTx> {
+  async function signAmino(account: FullAccountData<CosmosNetworkConfig>, tx: CosmosTxAmino) {
+    const { network } = account;
     if (!network) throw new Error('No network provided');
 
-    // Always update sign data before signing to ensure we have the latest sequence number
-    const acc = this.getAccount(network);
-    await acc.update([network]);
+    const keplrSigner = await backend.getOfflineSigner(network.chainId);
+    const sig = signer.snapshot(account);
 
-    const signData = acc.getSignData(network).peek();
-    if (!ExternalAccount.isComplete(signData)) throw new Error('Sign data incomplete');
-
-    const { address } = signData;
-    if (!address) throw new Error('Account not bound to a network');
-
-    const result = tx.encoding === 'amino'
-      ? await this.#signAmino(network, tx, address)
-      : await this.#signDirect(network, tx, address);
-    return result;
-  }
-
-  async #signAmino(network: CosmosNetworkConfig, tx: CosmosTxAmino, address: string): Promise<CosmosTx> {
-    if (!this.backend) throw new Error('Keplr not available');
-    const signer = await this.backend.getOfflineSigner(network.chainId);
-
-    const {
-      signed,
-      signature: { signature },
-    } = await signer.signAmino(address, TxMarshaller.marshal(tx.signDoc(network, this)) as any);
-
-    tx.messages = signed.msgs.map(msg => Amino.decode(network, msg));
+    const { signed, signature } = await keplrSigner.signAmino(account.address, TxMarshaller.marshal(tx.signDoc(sig)) as any);
+    tx.messages = signed.msgs.map((msg: any) => Amino.decode(network, msg));
     tx.memo = signed.memo;
     tx.timeoutHeight = BigInt(signed.timeout_height ?? 0n);
     tx.gas = {
-      amount: signed.fee.amount.map(coin => Cosmos.coin(coin.amount, coin.denom)),
+      amount: signed.fee.amount.map((coin: any) => Cosmos.coin(coin.amount, coin.denom)),
       gasLimit: BigInt(signed.fee.gas),
       granter: signed.fee.granter,
       payer: signed.fee.payer,
     };
-
-    tx.setSignature(network, this, fromBase64(signature));
-    return tx;
+    tx.setSignature(sig, utils.bytes(signature.signature));
   }
 
-  async #signDirect(network: CosmosNetworkConfig, tx: CosmosTxDirect, address: string): Promise<CosmosTx> {
-    if (!this.backend) throw new Error('Keplr not available');
-    const signer = await this.backend.getOfflineSigner(network.chainId);
+  async function signDirect(account: FullAccountData<CosmosNetworkConfig>, tx: CosmosTxDirect) {
+    const { network } = account;
+    if (!network) throw new Error('No network provided');
 
-    const signDoc = tx.signDoc(network, this);
-    const keplrSignDoc = {
-      ...signDoc,
-      accountNumber: Number(signDoc.accountNumber),
-    };
+    const keplrSigner = await backend.getOfflineSigner(network.chainId);
+    const sig = signer.snapshot(account);
 
-    const {
-      signed,
-      signature: { signature },
-    } = await signer.signDirect(address, TxMarshaller.marshal(keplrSignDoc) as any);
-
+    const { signed, signature } = await keplrSigner.signDirect(account.address, TxMarshaller.marshal(tx.signDoc(sig)) as any);
     const body = TxBody.decode(signed.bodyBytes);
-    tx.memo = body.memo;
-    if (tx instanceof CosmosTxDirect) {
-      tx.extensionOptions = body.extensionOptions;
-      tx.nonCriticalExtensionOptions = body.nonCriticalExtensionOptions;
-    }
-    tx.timeoutHeight = body.timeoutHeight;
-
     const authInfo = AuthInfo.decode(signed.authInfoBytes);
+
+    tx.messages = body.messages.map(msg => Any.decode(network, msg));
+    tx.memo = body.memo;
+    tx.timeoutHeight = body.timeoutHeight;
     tx.gas = {
       amount: authInfo.fee!.amount.map(coin => Cosmos.coin(coin.amount, coin.denom)),
       gasLimit: authInfo.fee!.gasLimit,
       granter: authInfo.fee!.granter,
       payer: authInfo.fee!.payer,
     };
-
-    tx.setSignature(network, this, fromBase64(signature));
+    if (tx instanceof CosmosTxDirect) {
+      tx.extensionOptions = body.extensionOptions;
+      tx.nonCriticalExtensionOptions = body.nonCriticalExtensionOptions;
+    }
+    tx.setSignature(sig, utils.bytes(signature.signature));
     return tx;
   }
 
-  /** Get the Keplr instance. Primarily used internally. */
-  get backend() {
-    return window.keplr;
+  async function fetchAccountsForNetworks(networks: CosmosNetworkConfig[]): Promise<AccountData<CosmosNetworkConfig>[]> {
+    if (!networks.length) return [];
+
+    return await Promise.all(networks.map(async (network: CosmosNetworkConfig) => {
+      const offlineSigner = await backend.getOfflineSigner(network.chainId);
+      const accounts = await offlineSigner.getAccounts();
+      return accounts.map((account: any) => createAccount(network, pubkey.secp256k1(account.pubkey)));
+    })).then(accounts => accounts.flat());
   }
 
-  /** Reinitialize the accounts for the given networks. Primarily used internally when the keychain changes. */
-  protected async _reinitAccounts(networks = this.#networks) {
-    const accmap: Record<string, ExternalAccount> = {};
-    for (const network of networks) {
-      const pks = await this.getPublicKeys([network]);
-      this.initAccounts(accmap, network, pks);
-    }
-    await this.updateSignData(Object.values(accmap), networks);
-    return this.accounts.value = Object.values(accmap);
-  }
+  async function resetAccounts() {
+    if (!backend || !signer) return;
 
-  /** Update all created & non-gcc'ed signers. Run automatically every 30s and when the keystore changes. */
-  static async resetAll() {
-    for (const signer of getSigners()) {
-      await signer._reinitAccounts();
+    const oldAccounts = accounts.peek();
+    const networks = Array.from(new Set(oldAccounts.map(acc => acc.network)));
+
+    if (networks.length > 0) {
+      await backend.enable(networks.map(network => network.chainId));
+      const newAccounts = await fetchAccountsForNetworks(networks);
+      accounts.value = newAccounts;
+    } else {
+      accounts.value = [];
     }
   }
 
-  static async updateAll() {
-    for (const signer of getSigners()) {
-      await signer.updateSignData(signer.accounts.peek());
-    }
+  const signer = createSigner<CosmosNetworkConfig, CosmosTx>((api) => {
+    return {
+      type: fullConfig.type,
+      displayName: fullConfig.displayName,
+      logoURL: fullConfig.logoURL,
+      canAutoReconnect: true,
+      available,
+      accounts,
+
+      probe: () => Promise.resolve(fullConfig.probe()),
+      connect: async (networks: CosmosNetworkConfig[]) => {
+        if (!networks.length) return [];
+
+        await Promise.all(networks.map(async (network: CosmosNetworkConfig) => await backend.experimentalSuggestChain(toChainSuggestion(network))));
+        await backend.enable(networks.map((network: CosmosNetworkConfig) => network.chainId));
+
+        return await fetchAccountsForNetworks(networks);
+      },
+      sign: async (account: FullAccountData<CosmosNetworkConfig>, tx: CosmosTx) => {
+        if (tx.encoding === 'amino') {
+          await signAmino(account, tx);
+        } else {
+          await signDirect(account, tx);
+        }
+        return tx;
+      },
+      broadcast: async (tx: CosmosTx) => {
+        if (!tx.network) throw new Error('Unsigned transaction');
+        const hashbytes = await backend.sendTx(tx.network.chainId, tx.bytes(), 'sync' as any);
+        const hash = utils.toHex(hashbytes);
+        tx.confirm(hash);
+        return hash;
+      },
+    };
+  });
+
+  if (typeof window !== 'undefined' && fullConfig.keystoreChangeEvent) {
+    window.addEventListener(fullConfig.keystoreChangeEvent, resetAccounts);
   }
+
+  return signer;
 }
 
-export const Keplr = new KeplrSigner();
-
-/** @deprecated Use `Keplr` instead. There is no difference between Direct and Amino signers in Apophis. */
-export const KeplrDirect = Keplr;
+export const Keplr = createKeplrSigner();
 
 function toChainSuggestion(network: CosmosNetworkConfig): Parameters<Required<KeplrWindow>['keplr']['experimentalSuggestChain']>[0] {
   return {
@@ -259,25 +211,4 @@ function toChainSuggestion(network: CosmosNetworkConfig): Parameters<Required<Ke
       coinGeckoId: network.staking.cgid,
     } : undefined,
   };
-}
-
-// Update all signers when the keystore changes
-if (typeof window !== 'undefined') {
-  window.addEventListener('keplr_keystorechange', KeplrSigner.resetAll);
-}
-
-// Update all signers periodically
-setInterval(KeplrSigner.updateAll, 30000);
-
-function getSigners() {
-  const result: KeplrSigner[] = [];
-  for (const signer of signers) {
-    const s = signer.deref();
-    if (s) {
-      result.push(s);
-    } else {
-      signers.delete(signer);
-    }
-  }
-  return result;
 }

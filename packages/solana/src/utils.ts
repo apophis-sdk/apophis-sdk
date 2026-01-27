@@ -2,7 +2,7 @@ import type { Bytes } from '@apophis-sdk/core';
 import { pubkey } from '@apophis-sdk/core/crypto/pubkey.js';
 import { bytes, fromBase58, fromUtf8, toBase58 } from '@apophis-sdk/core/utils.js';
 import { Point } from '@noble/ed25519';
-import { sha256 } from '@noble/hashes/sha256';
+import { sha256 } from '@noble/hashes/sha2';
 
 const MAX_SEEDS = 16;
 const MAX_SEED_LENGTH = 32;
